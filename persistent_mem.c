@@ -96,7 +96,7 @@ static block_header_t *allocate_from_heap(allocator_space_t *space, uint64_t siz
         new_end = current_end + sizeof(block_header_t) + size;
 
         if (new_end > total_size) {
-            return NULL; // Out of memory
+            return NULL; // Out of memory :(
         }
     } while (!atomic_compare_exchange_weak(&space->heap_end, &current_end, new_end));
 
@@ -108,8 +108,7 @@ static block_header_t *allocate_from_heap(allocator_space_t *space, uint64_t siz
 }
 
 // Split a block if it's large enough
-static block_header_t *
-split_block(block_header_t *block, uint64_t needed_size) {
+static block_header_t *split_block(block_header_t *block, uint64_t needed_size) {
     uint64_t size_and_flags = atomic_load(&block->size_and_flags);
     uint64_t block_size = get_size(size_and_flags);
 
@@ -131,9 +130,10 @@ split_block(block_header_t *block, uint64_t needed_size) {
 
 // Add block to appropriate free list
 static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
-    // Mark as free
     uint64_t old_saf, new_saf;
     old_saf = atomic_load(&block->size_and_flags);
+
+    // Mark as free
     do {
         new_saf = make_size_and_flags(get_size(old_saf), get_flags(old_saf) | BLOCK_FREE);
     } while (!atomic_compare_exchange_weak(&block->size_and_flags, &old_saf, new_saf));
@@ -153,17 +153,14 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
             atomic_store(&block->next_free, old_head_offset);
         } while (!atomic_compare_exchange_weak(&sc->free_head, &old_head_offset, block_offset));
     } else {
-        // Large block - add to large free list
+        // Large block - add to large free list (for large blocks, that are large)
         uint64_t block_offset = (uint64_t)((char *) block - (char *) space);
         uint64_t old_head_offset;
 
         old_head_offset = atomic_load(&space->large_free_head);
         do {
-            atomic_store(&block->next_free,
-                         old_head_offset ? (persistent_offset_t) ((char *) space + old_head_offset)
-                                         : 0);
-        } while (!atomic_compare_exchange_weak(&space->large_free_head, &old_head_offset,
-                                               block_offset));
+            atomic_store(&block->next_free, old_head_offset);  // Store offset, not pointer
+        } while (!atomic_compare_exchange_weak(&space->large_free_head, &old_head_offset, block_offset));
     }
 }
 
@@ -174,17 +171,29 @@ static block_header_t *remove_from_free_list(allocator_space_t *space, int memcl
     }
 
     size_class_t *sc = &space->size_classes[memclass];
-    persistent_offset_t head_offset;
+    persistent_offset_t head_offset, next_offset;
 
     do {
         head_offset = atomic_load(&sc->free_head);
-        if (!head_offset) return NULL;
-
         block_header_t *head = persistent_offset_to_ptr(space, head_offset);
+        if (!head) return NULL;
 
-        persistent_offset_t next_offset = atomic_load(&head->next_free);
+        // Validate that head points to memory within the allocator space
+        if ((char*)head < (char*)space || (char*)head >= (char*)space + atomic_load(&space->total_size)) {
+            return NULL;
+        }
+
+        // Read next_free while block is still in the list
+        next_offset = atomic_load(&head->next_free);
+
+        block_header_t *next = persistent_offset_to_ptr(space, next_offset);
+        if (!next || (char*)next < (char*)space || (char*)next >= (char*)space + atomic_load(&space->total_size)) {
+            return NULL;
+        }
+
+        // Try to remove from the list
         if (atomic_compare_exchange_weak(&sc->free_head, &head_offset, next_offset)) {
-            // Mark as allocated
+            // Successfully removed - NOW mark as allocated (and not before!)
             uint64_t old_saf, new_saf;
             old_saf = atomic_load(&head->size_and_flags);
             do {
@@ -194,6 +203,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space, int memcl
             atomic_store(&head->next_free, 0);
             return head;
         }
+        // CAS failed, head_offset updated, retry!
     } while (1);
 }
 

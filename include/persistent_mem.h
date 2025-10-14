@@ -33,7 +33,7 @@ extern "C" {
 typedef uint64_t persistent_offset_t;
 
 #define ptr_to_persistent_offset(space, ptr) ((uint64_t)ptr > (uint64_t)space ? (uint64_t)ptr - (uint64_t)space : 0)
-#define persistent_offset_to_ptr(space, offset) (offset != 0 ? (void*)((uint64_t)space + offset) : 0)
+#define persistent_offset_to_ptr(space, offset) (offset != 0 ? (void*)((uint64_t)space + offset) : NULL)
 
 // Block header - stored before each allocated block
 typedef struct block_header {

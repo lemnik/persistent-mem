@@ -16,7 +16,7 @@ Install Directory=/usr/local
 Runtime=Host System
 
 [Launch]
-Launch Configurations=Launch Configuration 0
+Launch Configurations=Launch Configuration 0,Launch Configuration 1,Launch Configuration 2
 
 [Launch][Launch Configuration 0]
 Configured Launch Modes=execute
@@ -35,6 +35,37 @@ Kill Before Executing Again=4194304
 Project Target=persistent_mem,example
 Use External Terminal=false
 Working Directory=file:///home/jason/work/projects/persistent_mem
+isExecutable=false
+
+[Launch][Launch Configuration 1]
+Configured Launch Modes=execute
+Configured Launchers=nativeAppLauncher
+Name=Tests
+Type=Native Application
+
+[Launch][Launch Configuration 1][Data]
+Arguments=
+Dependencies=@Variant(\x00\x00\x00\t\x00\x00\x00\x00\x00)
+Dependency Action=Nothing
+EnvironmentGroup=
+Executable=file:///home/jason/work/projects/persistent_mem/build/test
+External Terminal=konsole --noclose --workdir %workdir -e %exe
+Kill Before Executing Again=4194304
+Project Target=persistent_mem,test
+Use External Terminal=false
+Working Directory=file:///home/jason/work/projects/persistent_mem
+isExecutable=true
+
+[Launch][Launch Configuration 2]
+Configured Launch Modes=execute
+Configured Launchers=nativeAppLauncher
+Name=test
+Type=Native Application
+
+[Launch][Launch Configuration 2][Data]
+Configured from ProjectItem=persistent_mem,test
+Project Target=persistent_mem,test
+Working Directory=file:///home/jason/work/projects/persistent_mem/build/
 isExecutable=false
 
 [Project]
