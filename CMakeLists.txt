@@ -16,3 +16,4 @@ add_executable(example example/main.cpp)
 add_executable(test test/smoke_tests.cpp)
 
 target_link_libraries(example persistentmem)
+target_link_libraries(test persistentmem)
