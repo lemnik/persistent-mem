@@ -4,12 +4,12 @@ A pure C (though C++ compatible) allocator that works with `mmap` allowing you t
 
 ## Features
 
-- thread safe && lock free - no blocking, no spin locks, just pure atomics
+- ***thread safe && lock free*** - no blocking, no spin locks, just pure atomics
 - `malloc`, `free` and `realloc` implementations
-- archeology / forensic capabilities - rewrite pointers from previous memory spaces using `persistent_ptr`
-- identifiable allocations - `persistent_malloc_root` allows "root" allocations to be tagged for later retrieval (between process runs)
-- some C++ functionality - smart/fancy pointer named `PersistentPtr<*>` automatically keeps track of its `allocator_space` even between address changes (restarts)
- - `PersistentPtr` is header-only and `nostdlib` compatible
+- ***archeology / forensic capabilities*** - rewrite pointers from previous memory spaces using `persistent_ptr`
+- ***identifiable / tagged allocations*** - `persistent_malloc_root` allows "root" allocations to be tagged for later retrieval (between process runs)
+- ***some C++ functionality*** - smart/fancy pointer named `PersistentPtr<*>` automatically keeps track of its `allocator_space` even between address changes (restarts)
+  - `PersistentPtr` is header-only and `nostdlib` compatible
 
 ## Limitations
 
