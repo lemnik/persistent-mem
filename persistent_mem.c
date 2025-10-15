@@ -14,10 +14,10 @@
 
 #define MAGIC_NUMBER 0x0000ADFBCADE
 #define MIN_BLOCK_SIZE 32
-#define ALIGNMENT 16
+#define ALIGNMENT      16
 
 // Flags for block header
-#define BLOCK_FREE 0x1
+#define BLOCK_FREE  0x1
 #define BLOCK_LARGE 0x2
 
 // 16777216 = 16MB - this is larger than most mmap spaces should reasonably be
@@ -88,7 +88,7 @@ static int init_allocator_state(allocator_space_t *space, uint64_t total_size) {
   atomic_store(&space->roots_head, 0);
 
   for (int i = 0; i < MAX_SIZE_CLASS; i++) {
-    atomic_store(&space->size_classes[i].free_head, 0);
+    atomic_store(&space->free_lists[i].free_head, 0);
   }
 
   return 0;
@@ -148,10 +148,8 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
 
   // Mark as free
   do {
-    new_saf =
-        make_size_and_flags(get_size(old_saf), get_flags(old_saf) | BLOCK_FREE);
-  } while (
-      !atomic_compare_exchange_weak(&block->size_and_flags, &old_saf, new_saf));
+    new_saf = make_size_and_flags(get_size(old_saf), get_flags(old_saf) | BLOCK_FREE);
+  } while (!atomic_compare_exchange_weak(&block->size_and_flags, &old_saf, new_saf));
 
   uint64_t size_and_flags = atomic_load(&block->size_and_flags);
   uint64_t size = get_size(size_and_flags);
@@ -159,14 +157,14 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
 
   if (memclass >= 0) {
     // Small/medium block - add to size memclass
-    size_class_t *sc = &space->size_classes[memclass];
+    free_list_t *lst = &space->free_lists[memclass];
     persistent_offset_t block_offset = ptr_to_persistent_offset(space, block);
     persistent_offset_t old_head_offset;
 
-    old_head_offset = atomic_load(&sc->free_head);
+    old_head_offset = atomic_load(&lst->free_head);
     do {
       atomic_store(&block->next_free, old_head_offset);
-    } while (!atomic_compare_exchange_weak(&sc->free_head, &old_head_offset,
+    } while (!atomic_compare_exchange_weak(&lst->free_head, &old_head_offset,
                                            block_offset));
   } else {
     // Large block - add to large free list (for large blocks, that are large)
@@ -175,8 +173,8 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
 
     old_head_offset = atomic_load(&space->large_free_head);
     do {
-      atomic_store(&block->next_free,
-                   old_head_offset); // Store offset, not pointer
+       // Store offset, not pointer
+      atomic_store(&block->next_free, old_head_offset);
     } while (!atomic_compare_exchange_weak(&space->large_free_head,
                                            &old_head_offset, block_offset));
   }
@@ -189,11 +187,11 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
     return NULL;
   }
 
-  size_class_t *sc = &space->size_classes[memclass];
+  free_list_t *lst = &space->free_lists[memclass];
   persistent_offset_t head_offset, next_offset;
 
   do {
-    head_offset = atomic_load(&sc->free_head);
+    head_offset = atomic_load(&lst->free_head);
     block_header_t *head = persistent_offset_to_ptr(space, head_offset);
     if (!head)
       return NULL;
@@ -214,7 +212,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
     }
 
     // Try to remove from the list
-    if (atomic_compare_exchange_weak(&sc->free_head, &head_offset,
+    if (atomic_compare_exchange_weak(&lst->free_head, &head_offset,
                                      next_offset)) {
       // Successfully removed - NOW mark as allocated (and not before!)
       uint64_t old_saf, new_saf;
@@ -332,8 +330,7 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
     return NULL;
   }
 
-  block_header_t *block =
-      (block_header_t *)((char *)ptr - sizeof(block_header_t));
+  block_header_t *block = (block_header_t *)((char *)ptr - sizeof(block_header_t));
   uint64_t size_and_flags = atomic_load(&block->size_and_flags);
   uint64_t old_size = get_size(size_and_flags);
   uint64_t aligned_new_size = align_up(new_size, ALIGNMENT);
@@ -394,17 +391,14 @@ allocator_space_t *create_persistent_allocator(const char *filename,
 
 void *persistent_malloc_root(allocator_space_t *space, uint64_t root_class,
                              size_t size) {
-  allocator_root_t *new_root =
-      persistent_malloc(space, sizeof(allocator_root_t) + size);
+  allocator_root_t *new_root = persistent_malloc(space, sizeof(allocator_root_t) + size);
   if (!new_root) {
     return NULL;
   }
 
   new_root->root_class = root_class;
-  persistent_offset_t current_first_root_offset =
-      atomic_load(&space->roots_head);
-  persistent_offset_t new_root_offset =
-      ptr_to_persistent_offset(space, new_root);
+  persistent_offset_t current_first_root_offset = atomic_load(&space->roots_head);
+  persistent_offset_t new_root_offset = ptr_to_persistent_offset(space, new_root);
   for (;;) {
     atomic_store(&new_root->next_root, current_first_root_offset);
 

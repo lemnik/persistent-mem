@@ -18,10 +18,8 @@
 
 #ifndef PERSISTENT_MEM_LOG
 #define PERSISTENT_MEM_LOG(fmt, ...) ((void)0)
-// #define PERSISTENT_MEM_LOG(fmt, ...) printf("[%s:%d] " fmt, __FILE__,
-// __LINE__, ##__VA_ARGS__) #define PERSISTENT_MEM_LOG(fmt, ...)
-// __android_log_print(ANDROID_LOG_FATAL, "PersistentMem", "[%s:%d] " fmt,
-// __FILE__, __LINE__, ##__VA_ARGS__)
+// #define PERSISTENT_MEM_LOG(fmt, ...) printf("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__) #define PERSISTENT_MEM_LOG(fmt, ...)
+// __android_log_print(ANDROID_LOG_FATAL, "PersistentMem", "[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
 #endif
 
 #define MAX_SIZE_CLASS 20
@@ -38,7 +36,7 @@ typedef uint64_t persistent_offset_t;
 #define persistent_offset_to_ptr(space, offset)                                \
   (offset != 0 ? (void *)((uint64_t)space + offset) : NULL)
 
-// Block header - stored before each allocated block
+// Block header - stored before each allocated: block = { block_header, &public_ptr }
 typedef struct block_header {
   // size in lower 60 bits, flags in upper 4 bits
   ATOMIC(uint64_t) size_and_flags;
@@ -46,11 +44,10 @@ typedef struct block_header {
   ATOMIC(persistent_offset_t) next_free;
 } block_header_t;
 
-// Size memclass for segregated free lists
-typedef struct size_class {
+typedef struct free_list {
   // head of free list for this size class
   ATOMIC(persistent_offset_t) free_head;
-} size_class_t;
+} free_list_t;
 
 /**
  * Persistent allocator space stored within the persistent (file-backed) region.
@@ -65,7 +62,7 @@ typedef struct allocator_space {
   ATOMIC(uint64_t) total_size;               // total size of mmap region
   ATOMIC(uint64_t) heap_start;               // offset to start of heap area
   ATOMIC(uint64_t) heap_end;                 // current end of heap (offset)
-  size_class_t size_classes[MAX_SIZE_CLASS]; // segregated free lists
+  free_list_t free_lists[MAX_SIZE_CLASS];    // free list for each of the block size classes
   ATOMIC(uint64_t) large_free_head;          // offset to large block free list
   ATOMIC(persistent_offset_t) roots_head;    // offset to the first tagged root
 } allocator_space_t;
