@@ -18,8 +18,9 @@ A pure C (though C++ compatible) allocator that works with `mmap` allowing you t
 - Non-optimal realloc - `persistent_realloc` will not attempt to merge contiguous blocks of memory to avoid `memcpy`
 - `PersistentPtr` cannot be made atomic (yet) - this will be added when I have time
 - No C++ STL `Allocator` (yet)
+- Requires 64bit lock-free atomics to be available
 
 ### Pointer considerations
-Care needs to be taken when using raw pointers within the space, `persistent_ptr` can be used to archeologically recover raw pointers from a previous run but you should treat these spaces as __read only__. `persistent_ptr` works by adjusting the pointer based on the "old" and "new" memory address of the persistent space (`new_raw_ptr = old_raw_ptr - &old_raw + &new_space`) but since there is only a single slot for the `origin` to be stored we can only adjust from a single "old" space into our "new" space. For more flexibility C code can make use of the `persistent_offset_t` typealias along with the `ptr_to_persistent_offset` and `persistent_persistent_offset_to_ptr` macros to convert to and from raw pointers.
+Care needs to be taken when using raw pointers within the space, `persistent_ptr` can be used to archeologically recover raw pointers from a previous run, but you should treat these spaces as __read only__. `persistent_ptr` works by adjusting the pointer based on the "old" and "new" memory address of the persistent space (`new_raw_ptr = old_raw_ptr - &old_raw + &new_space`) but since there is only a single slot for the `origin` to be stored we can only adjust from a single "old" space into our "new" space. For more flexibility C code can make use of the `persistent_offset_t` typealias along with the `ptr_to_persistent_offset` and `persistent_persistent_offset_to_ptr` macros to convert to and from raw pointers.
 
 For C++ code there is a `persistent_mem::PersistentPtr` template class which can be treated like other fancy pointers, but remain internally consistent if they are properly initialised (they *must* be passed a `allocator_space_t*` at least once).
