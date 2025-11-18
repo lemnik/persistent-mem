@@ -12,7 +12,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define MAGIC_NUMBER 0x0000ADFBCADE
+#define MAGIC_NUMBER   0x0000ADFBCADE
 #define MIN_BLOCK_SIZE 32
 #define ALIGNMENT      16
 
@@ -75,14 +75,13 @@ static inline uint64_t class_to_size(int memclass) {
  */
 static int init_allocator_state(allocator_space_t *space, uint64_t total_size) {
   uint32_t expected_magic = 0;
-  if (!atomic_compare_exchange_strong(&space->magic, &expected_magic,
-                                      MAGIC_NUMBER)) {
+  if (!atomic_compare_exchange_strong(&space->magic, &expected_magic, MAGIC_NUMBER)) {
     return (atomic_load(&space->magic) == MAGIC_NUMBER) ? 0 : -1;
   }
 
-  atomic_store(&space->origin, (uint64_t)space);
-  atomic_store(&space->total_size, total_size);
-  atomic_store(&space->heap_start, sizeof(allocator_space_t));
+  space->origin = (uint64_t)space;
+  space->total_size = total_size;
+  space->heap_start = sizeof(allocator_space_t);
   atomic_store(&space->heap_end, sizeof(allocator_space_t));
   atomic_store(&space->large_free_head, 0);
   atomic_store(&space->roots_head, 0);
@@ -97,7 +96,7 @@ static int init_allocator_state(allocator_space_t *space, uint64_t total_size) {
 // Allocate a new block from the heap
 static block_header_t *allocate_from_heap(allocator_space_t *space,
                                           uint64_t size) {
-  uint64_t total_size = atomic_load(&space->total_size);
+  uint64_t total_size = space->total_size;
   uint64_t current_end, new_end;
 
   current_end = atomic_load(&space->heap_end);
@@ -107,8 +106,7 @@ static block_header_t *allocate_from_heap(allocator_space_t *space,
     if (new_end > total_size) {
       return NULL; // Out of memory :(
     }
-  } while (
-      !atomic_compare_exchange_weak(&space->heap_end, &current_end, new_end));
+  } while (!atomic_compare_exchange_weak(&space->heap_end, &current_end, new_end));
 
   block_header_t *block = (block_header_t *)((char *)space + current_end);
   atomic_store(&block->size_and_flags, make_size_and_flags(size, 0));
@@ -127,8 +125,7 @@ static block_header_t *split_block(block_header_t *block,
     // Split the block
     uint64_t remaining_size = block_size - needed_size - sizeof(block_header_t);
     block_header_t *new_block =
-        (block_header_t *)((char *)block + sizeof(block_header_t) +
-                           needed_size);
+        (block_header_t *)((char *)block + sizeof(block_header_t) + needed_size);
 
     atomic_store(&new_block->size_and_flags,
                  make_size_and_flags(remaining_size, BLOCK_FREE));
@@ -173,7 +170,6 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
 
     old_head_offset = atomic_load(&space->large_free_head);
     do {
-       // Store offset, not pointer
       atomic_store(&block->next_free, old_head_offset);
     } while (!atomic_compare_exchange_weak(&space->large_free_head,
                                            &old_head_offset, block_offset));
@@ -198,7 +194,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
 
     // Validate that head points to memory within the allocator space
     if ((char *)head < (char *)space ||
-        (char *)head >= (char *)space + atomic_load(&space->total_size)) {
+        (char *)head >= (char *)space + space->total_size) {
       return NULL;
     }
 
@@ -207,7 +203,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
 
     block_header_t *next = persistent_offset_to_ptr(space, next_offset);
     if (!next || (char *)next < (char *)space ||
-        (char *)next >= (char *)space + atomic_load(&space->total_size)) {
+        (char *)next >= (char *)space + space->total_size) {
       return NULL;
     }
 
@@ -231,8 +227,9 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
 }
 
 void *persistent_malloc(allocator_space_t *space, size_t size) {
-  if (!space || size == 0)
+  if (space == NULL || size == 0) {
     return NULL;
+  }
 
   if (atomic_load(&space->magic) != MAGIC_NUMBER) {
     return NULL;
@@ -301,7 +298,7 @@ void persistent_free(allocator_space_t *space, void *ptr) {
 
   // Validate block is within our region
   if ((char *)block < (char *)space ||
-      (char *)block >= (char *)space + atomic_load(&space->total_size)) {
+      (char *)block >= (char *)space + space->total_size) {
     return;
   }
 
@@ -432,7 +429,7 @@ void *persistent_ptr(allocator_space_t *space, void *ptr) {
     return NULL;
   }
 
-  const uint64_t original_origin = atomic_load(&space->origin);
+  const uint64_t original_origin = space->origin;
   const uint64_t current_origin = (uint64_t)space;
 
   // If the mapping hasn't changed, the pointer is already valid.
@@ -443,7 +440,7 @@ void *persistent_ptr(allocator_space_t *space, void *ptr) {
   // Calculate the offset of the pointer from the original base address.
   const uint64_t offset = (uint64_t)ptr - original_origin;
 
-  const uint64_t heap_start_offset = atomic_load(&space->heap_start);
+  const uint64_t heap_start_offset = space->heap_start;
   const uint64_t heap_end_offset = atomic_load(&space->heap_end);
 
   // Validate that the offset falls within the heap boundaries.
@@ -456,8 +453,7 @@ void *persistent_ptr(allocator_space_t *space, void *ptr) {
 }
 
 void destroy_persistent_allocator(allocator_space_t *space) {
-  if (space) {
-    uint64_t total_size = atomic_load(&space->total_size);
-    munmap(space, total_size);
+  if (space && atomic_load(&space->magic) == MAGIC_NUMBER) {
+    munmap(space, space->total_size);
   }
 }

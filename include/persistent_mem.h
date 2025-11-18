@@ -19,7 +19,7 @@
 #ifndef PERSISTENT_MEM_LOG
 #define PERSISTENT_MEM_LOG(fmt, ...) ((void)0)
 // #define PERSISTENT_MEM_LOG(fmt, ...) printf("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__) #define PERSISTENT_MEM_LOG(fmt, ...)
-// __android_log_print(ANDROID_LOG_FATAL, "PersistentMem", "[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+// __android_log_print(ANDROID_LOG_FATAL, "PersistentMem", "[%s:%d] " fmt,0 __FILE__, __LINE__, ##__VA_ARGS__)
 #endif
 
 #define MAX_SIZE_CLASS 20
@@ -56,11 +56,10 @@ typedef struct free_list {
  * [persistent_ptr] to rewrite the addresses to remain valid.
  */
 typedef struct allocator_space {
-  ATOMIC(uint32_t) magic; // magic number for validation
-  ATOMIC(uint64_t)
-  origin; // the base pointer of the mmap region in its original memory space
-  ATOMIC(uint64_t) total_size;               // total size of mmap region
-  ATOMIC(uint64_t) heap_start;               // offset to start of heap area
+  ATOMIC(uint32_t) magic;                    // magic number for validation
+  uint64_t origin;                           // the base pointer of the mmap region in its original memory space
+  uint64_t total_size;                       // total size of mmap region
+  uint64_t heap_start;                       // offset to start of heap area
   ATOMIC(uint64_t) heap_end;                 // current end of heap (offset)
   free_list_t free_lists[MAX_SIZE_CLASS];    // free list for each of the block size classes
   ATOMIC(uint64_t) large_free_head;          // offset to large block free list
