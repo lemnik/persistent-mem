@@ -151,11 +151,11 @@ int main(int argc, char* argv[]) {
     }
 
     printf("\nDiagnostics:\n");
-    printf("  Space origin: 0x%016lx\n", space->origin.load());
-    printf("  Total size: %lu bytes\n", space->total_size.load());
-    printf("  Heap start: 0x%016lx\n", space->heap_start.load());
+    printf("  Space origin: 0x%016lx\n", space->origin);
+    printf("  Total size: %lu bytes\n", space->total_size);
+    printf("  Heap start: 0x%016lx\n", space->heap_start);
     printf("  Heap end: 0x%016lx\n", space->heap_end.load());
-    printf("  Heap extent: %lu bytes\n", space->heap_end.load() - space->heap_start.load());
+    printf("  Heap extent: %lu bytes\n", space->heap_end.load() - space->heap_start);
 
     if (root->size > 0 && root->data) {
         PersistentPtr<char>* data_array = root->data.get();
