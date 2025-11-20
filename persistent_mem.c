@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -93,6 +94,36 @@ static int init_allocator_state(allocator_space_t *space, uint64_t total_size) {
   return 0;
 }
 
+static inline bool block_try_set_flag(block_header_t *block, uint64_t flag) {
+  uint64_t old_saf, new_saf;
+  old_saf = atomic_load(&block->size_and_flags);
+  do {
+    if ((get_flags(old_saf) & flag) != 0) {
+      return false;
+    }
+
+    new_saf = make_size_and_flags(get_size(old_saf), get_flags(old_saf) | flag);
+  } while (!atomic_compare_exchange_weak(&block->size_and_flags, &old_saf, new_saf));
+
+  return true;
+}
+
+static inline bool block_try_clear_flag(block_header_t *block, uint64_t flag) {
+  uint64_t old_saf, new_saf;
+  uint64_t flag_mask = ~flag;
+  old_saf = atomic_load(&block->size_and_flags);
+  do {
+    // is the flag already cleared? if so we failed and return false
+    if ((get_flags(old_saf) & flag) == 0) {
+      return false;
+    }
+
+    new_saf = make_size_and_flags(get_size(old_saf), get_flags(old_saf) & flag_mask);
+  } while (!atomic_compare_exchange_weak(&block->size_and_flags, &old_saf, new_saf));
+
+  return true;
+}
+
 // Allocate a new block from the heap
 static block_header_t *allocate_from_heap(allocator_space_t *space,
                                           uint64_t size) {
@@ -115,7 +146,8 @@ static block_header_t *allocate_from_heap(allocator_space_t *space,
   return block;
 }
 
-// Split a block if it's large enough
+// Split a block if it's large enough, returning the "remainder" if the block was split or
+// NULL if the block was not large enough to split
 static block_header_t *split_block(block_header_t *block,
                                    uint64_t needed_size) {
   uint64_t size_and_flags = atomic_load(&block->size_and_flags);
@@ -140,13 +172,11 @@ static block_header_t *split_block(block_header_t *block,
 
 // Add block to appropriate free list
 static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
-  uint64_t old_saf, new_saf;
-  old_saf = atomic_load(&block->size_and_flags);
-
   // Mark as free
-  do {
-    new_saf = make_size_and_flags(get_size(old_saf), get_flags(old_saf) | BLOCK_FREE);
-  } while (!atomic_compare_exchange_weak(&block->size_and_flags, &old_saf, new_saf));
+  if (!block_try_set_flag(block, BLOCK_FREE)) {
+    // multi-threaded `free` for the same block, so we exit here
+    return;
+  }
 
   uint64_t size_and_flags = atomic_load(&block->size_and_flags);
   uint64_t size = get_size(size_and_flags);
@@ -211,16 +241,10 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
     if (atomic_compare_exchange_weak(&lst->free_head, &head_offset,
                                      next_offset)) {
       // Successfully removed - NOW mark as allocated (and not before!)
-      uint64_t old_saf, new_saf;
-      old_saf = atomic_load(&head->size_and_flags);
-      do {
-        new_saf = make_size_and_flags(get_size(old_saf),
-                                      get_flags(old_saf) & ~BLOCK_FREE);
-      } while (!atomic_compare_exchange_weak(&head->size_and_flags, &old_saf,
-                                             new_saf));
-
-      atomic_store(&head->next_free, 0);
-      return head;
+      if (block_try_clear_flag(head, BLOCK_FREE)) {
+        atomic_store(&head->next_free, 0);
+        return head;
+      }
     }
     // CAS failed, head_offset updated, retry!
   } while (1);
