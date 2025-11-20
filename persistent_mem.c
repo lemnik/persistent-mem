@@ -63,6 +63,10 @@ static inline uint64_t class_to_size(int memclass) {
   return (memclass >= 0 && memclass < MAX_SIZE_CLASS) ? sizes[memclass] : 0;
 }
 
+static inline bool is_persistent_ptr(allocator_space_t *space, void *ptr) {
+  return (char *)ptr > (char *)space + space->heap_start && (char *)ptr < (char *)space + space->total_size;
+}
+
 /**
  * Init the allocator into the given space. This function will not re-init an
  * existing allocator into the space if one has already been initialized, making
@@ -223,8 +227,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
       return NULL;
 
     // Validate that head points to memory within the allocator space
-    if ((char *)head < (char *)space ||
-        (char *)head >= (char *)space + space->total_size) {
+    if (!is_persistent_ptr(space, head)) {
       return NULL;
     }
 
@@ -232,8 +235,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
     next_offset = atomic_load(&head->next_free);
 
     block_header_t *next = persistent_offset_to_ptr(space, next_offset);
-    if (!next || (char *)next < (char *)space ||
-        (char *)next >= (char *)space + space->total_size) {
+    if (!next || !is_persistent_ptr(space, next)) {
       return NULL;
     }
 
@@ -321,8 +323,7 @@ void persistent_free(allocator_space_t *space, void *ptr) {
       (block_header_t *)((char *)ptr - sizeof(block_header_t));
 
   // Validate block is within our region
-  if ((char *)block < (char *)space ||
-      (char *)block >= (char *)space + space->total_size) {
+  if (!is_persistent_ptr(space, block)) {
     return;
   }
 
