@@ -11,55 +11,76 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define MAGIC_NUMBER   0x0000ADFBCADE
 #define MIN_BLOCK_SIZE 32
 #define ALIGNMENT      16
 
-// Flags for block header
+// Flags for block header (upper 2 bits)
 #define BLOCK_FREE  0x1
 #define BLOCK_LARGE 0x2
 
-// 16777216 = 16MB - this is larger than most mmap spaces should reasonably be
-// ;)
+// Large block limit adjusted for architecture
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+
+// 64-bit: 16MB limit, 62 bits for size
 #define LARGE_BLOCK_LIMIT 0x1000000
+#define SIZE_MASK         0x3FFFFFFFFFFFFFFFuLL
+#define FLAG_SHIFT        62
+
+#else
+
+// 32-bit: 1GB limit, 30 bits for size
+#define LARGE_BLOCK_LIMIT 0x40000000
+#define SIZE_MASK         0x3FFFFFFFu
+#define FLAG_SHIFT        30
+
+#endif
 
 // Utility functions
-static inline uint64_t get_size(uint64_t size_and_flags) {
-  return size_and_flags & 0x0FFFFFFFFFFFFFFFuLL;
+static inline size_t get_size(size_t size_and_flags) {
+  return size_and_flags & SIZE_MASK;
 }
 
-static inline uint64_t get_flags(uint64_t size_and_flags) {
-  return (size_and_flags >> 60) & 0xF;
+static inline size_t get_flags(size_t size_and_flags) {
+  return (size_and_flags >> FLAG_SHIFT) & 0x3;
 }
 
-static inline uint64_t make_size_and_flags(uint64_t size, uint64_t flags) {
-  return (size & 0x0FFFFFFFFFFFFFFFULL) | ((flags & 0xF) << 60);
+static inline size_t make_size_and_flags(size_t size, size_t flags) {
+  return (size & SIZE_MASK) | ((flags & 0x3) << FLAG_SHIFT);
 }
 
-static inline uint64_t align_up(uint64_t size, uint64_t alignment) {
+static inline size_t align_up(size_t size, size_t alignment) {
   return (size + alignment - 1) & ~(alignment - 1);
 }
 
-static inline int size_to_class(uint64_t size) {
+static inline int size_to_class(size_t size) {
   if (size <= MIN_BLOCK_SIZE)
     return 0;
   if (size > LARGE_BLOCK_LIMIT)
     return -1;
 
-  // Find MSB of (size - 1), then add 1 to round up
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+  // 64-bit: Find MSB of (size - 1), then add 1 to round up
   int msb = 64 - __builtin_clzll(size - 1);
+#else
+  // 32-bit
+  int msb = 32 - __builtin_clz((uint32_t)(size - 1));
+#endif
 
   // Size class = msb - 5 (since 2^5 = 32 is class 0)
   return msb - 5;
 }
 
-static inline uint64_t class_to_size(int memclass) {
-  static const uint64_t sizes[] = {
+static inline size_t class_to_size(int memclass) {
+  static const size_t sizes[] = {
       32,     64,      128,     256,     512,     1024,    2048,
       4096,   8192,    16384,   32768,   65536,   131072,  262144,
-      524288, 1048576, 2097152, 4194304, 8388608, 16777216};
+      524288, 1048576, 2097152, 4194304, 8388608, 16777216
+  };
+
   return (memclass >= 0 && memclass < MAX_SIZE_CLASS) ? sizes[memclass] : 0;
 }
 
@@ -78,13 +99,13 @@ static inline bool is_persistent_ptr(allocator_space_t *space, void *ptr) {
  * the `allocator_state` structure)
  * @return 0 on success, -1 on failure
  */
-static int init_allocator_state(allocator_space_t *space, uint64_t total_size) {
+static int init_allocator_state(allocator_space_t *space, size_t total_size) {
   uint32_t expected_magic = 0;
   if (!atomic_compare_exchange_strong(&space->magic, &expected_magic, MAGIC_NUMBER)) {
     return (atomic_load(&space->magic) == MAGIC_NUMBER) ? 0 : -1;
   }
 
-  space->origin = (uint64_t)space;
+  space->origin = (uintptr_t)space;
   space->total_size = total_size;
   space->heap_start = sizeof(allocator_space_t);
   atomic_store(&space->heap_end, sizeof(allocator_space_t));
@@ -98,8 +119,8 @@ static int init_allocator_state(allocator_space_t *space, uint64_t total_size) {
   return 0;
 }
 
-static inline bool block_try_set_flag(block_header_t *block, uint64_t flag) {
-  uint64_t old_saf, new_saf;
+static inline bool block_try_set_flag(block_header_t *block, size_t flag) {
+  size_t old_saf, new_saf;
   old_saf = atomic_load(&block->size_and_flags);
   do {
     if ((get_flags(old_saf) & flag) != 0) {
@@ -112,9 +133,9 @@ static inline bool block_try_set_flag(block_header_t *block, uint64_t flag) {
   return true;
 }
 
-static inline bool block_try_clear_flag(block_header_t *block, uint64_t flag) {
-  uint64_t old_saf, new_saf;
-  uint64_t flag_mask = ~flag;
+static inline bool block_try_clear_flag(block_header_t *block, size_t flag) {
+  size_t old_saf, new_saf;
+  size_t flag_mask = ~flag;
   old_saf = atomic_load(&block->size_and_flags);
   do {
     // is the flag already cleared? if so we failed and return false
@@ -130,9 +151,9 @@ static inline bool block_try_clear_flag(block_header_t *block, uint64_t flag) {
 
 // Allocate a new block from the heap
 static block_header_t *allocate_from_heap(allocator_space_t *space,
-                                          uint64_t size) {
-  uint64_t total_size = space->total_size;
-  uint64_t current_end, new_end;
+                                          size_t size) {
+  size_t total_size = space->total_size;
+  size_t current_end, new_end;
 
   current_end = atomic_load(&space->heap_end);
   do {
@@ -153,13 +174,13 @@ static block_header_t *allocate_from_heap(allocator_space_t *space,
 // Split a block if it's large enough, returning the "remainder" if the block was split or
 // NULL if the block was not large enough to split
 static block_header_t *split_block(block_header_t *block,
-                                   uint64_t needed_size) {
-  uint64_t size_and_flags = atomic_load(&block->size_and_flags);
-  uint64_t block_size = get_size(size_and_flags);
+                                   size_t needed_size) {
+  size_t size_and_flags = atomic_load(&block->size_and_flags);
+  size_t block_size = get_size(size_and_flags);
 
   if (block_size >= needed_size + sizeof(block_header_t) + MIN_BLOCK_SIZE) {
     // Split the block
-    uint64_t remaining_size = block_size - needed_size - sizeof(block_header_t);
+    size_t remaining_size = block_size - needed_size - sizeof(block_header_t);
     block_header_t *new_block =
         (block_header_t *)((char *)block + sizeof(block_header_t) + needed_size);
 
@@ -182,8 +203,8 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
     return;
   }
 
-  uint64_t size_and_flags = atomic_load(&block->size_and_flags);
-  uint64_t size = get_size(size_and_flags);
+  size_t size_and_flags = atomic_load(&block->size_and_flags);
+  size_t size = get_size(size_and_flags);
   const int memclass = size_to_class(size);
 
   if (memclass >= 0) {
@@ -199,8 +220,8 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
                                            block_offset));
   } else {
     // Large block - add to large free list (for large blocks, that are large)
-    uint64_t block_offset = (uint64_t)((char *)block - (char *)space);
-    uint64_t old_head_offset;
+    persistent_offset_t block_offset = (persistent_offset_t)((char *)block - (char *)space);
+    persistent_offset_t old_head_offset;
 
     old_head_offset = atomic_load(&space->large_free_head);
     do {
@@ -261,7 +282,7 @@ void *persistent_malloc(allocator_space_t *space, size_t size) {
     return NULL;
   }
 
-  uint64_t aligned_size = align_up(size, ALIGNMENT);
+  size_t aligned_size = align_up(size, ALIGNMENT);
   int memclass = size_to_class(aligned_size);
   block_header_t *block = NULL;
 
@@ -280,7 +301,7 @@ void *persistent_malloc(allocator_space_t *space, size_t size) {
     }
 
     // If free list was empty, allocate a new block of the exact size class.
-    uint64_t class_size = class_to_size(memclass);
+    size_t class_size = class_to_size(memclass);
     block = allocate_from_heap(space, class_size);
     if (block) {
       // We just allocated a fresh block. It might be larger than needed.
@@ -296,7 +317,7 @@ void *persistent_malloc(allocator_space_t *space, size_t size) {
     block = allocate_from_heap(space, aligned_size);
     if (block) {
       // Mark as a large block
-      uint64_t old_saf, new_saf;
+      size_t old_saf, new_saf;
       old_saf = atomic_load(&block->size_and_flags);
       do {
         new_saf = make_size_and_flags(get_size(old_saf),
@@ -327,7 +348,7 @@ void persistent_free(allocator_space_t *space, void *ptr) {
     return;
   }
 
-  uint64_t size_and_flags = atomic_load(&block->size_and_flags);
+  size_t size_and_flags = atomic_load(&block->size_and_flags);
   if (get_flags(size_and_flags) & BLOCK_FREE) {
     return; // Double free protection
   }
@@ -353,9 +374,9 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
   }
 
   block_header_t *block = (block_header_t *)((char *)ptr - sizeof(block_header_t));
-  uint64_t size_and_flags = atomic_load(&block->size_and_flags);
-  uint64_t old_size = get_size(size_and_flags);
-  uint64_t aligned_new_size = align_up(new_size, ALIGNMENT);
+  size_t size_and_flags = atomic_load(&block->size_and_flags);
+  size_t old_size = get_size(size_and_flags);
+  size_t aligned_new_size = align_up(new_size, ALIGNMENT);
 
   if (aligned_new_size <= old_size) {
     // Shrinking or same size
@@ -375,12 +396,47 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
   return new_ptr;
 }
 
-// Initialization function for the allocator
+
+allocator_space_t *load_private_persistent_allocator(const char *filename) {
+  struct stat st;
+  if (stat(filename, &st) != 0) {
+    return NULL;
+  }
+
+  const size_t size = st.st_size;
+
+  int fd = open(filename, O_RDWR, 0644);
+  if (fd < 0) {
+    return NULL;
+  }
+
+  void *mapped = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  // we don't need the fd anymore, so we can close it
+  close(fd);
+
+  if (mapped == MAP_FAILED) {
+    return NULL;
+  }
+
+  allocator_space_t *space = (allocator_space_t *)mapped;
+  if (atomic_load(&space->magic) != MAGIC_NUMBER) {
+    munmap(space, size);
+    return NULL;
+  }
+
+  return space;
+}
+
 allocator_space_t *create_persistent_allocator(const char *filename,
                                                const size_t requested_size) {
   size_t size = requested_size;
   if (size < sizeof(allocator_space_t) + 4096) {
     size = sizeof(allocator_space_t) + 4096; // Minimum size
+  }
+
+  // On 32-bit systems, ensure we don't exceed addressable space
+  if (size > SIZE_MAX) {
+    return NULL;
   }
 
   int fd = open(filename, O_CREAT | O_RDWR, 0644);
@@ -454,8 +510,8 @@ void *persistent_ptr(allocator_space_t *space, void *ptr) {
     return NULL;
   }
 
-  const uint64_t original_origin = space->origin;
-  const uint64_t current_origin = (uint64_t)space;
+  const size_t original_origin = space->origin;
+  const size_t current_origin = (uintptr_t)space;
 
   // If the mapping hasn't changed, the pointer is already valid.
   if (original_origin == current_origin) {
@@ -463,10 +519,10 @@ void *persistent_ptr(allocator_space_t *space, void *ptr) {
   }
 
   // Calculate the offset of the pointer from the original base address.
-  const uint64_t offset = (uint64_t)ptr - original_origin;
+  const size_t offset = (uintptr_t)ptr - original_origin;
 
-  const uint64_t heap_start_offset = space->heap_start;
-  const uint64_t heap_end_offset = atomic_load(&space->heap_end);
+  const size_t heap_start_offset = space->heap_start;
+  const size_t heap_end_offset = atomic_load(&space->heap_end);
 
   // Validate that the offset falls within the heap boundaries.
   if (offset < heap_start_offset || offset >= heap_end_offset) {

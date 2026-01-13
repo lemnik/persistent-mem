@@ -1,3 +1,11 @@
 build/
 .idea/
-.kdev4
+
+# KDev
+.kdev4/
+persistent_mem.kdev4
+
+# The example app output
+example_vector.bin
+
+CMakeFiles

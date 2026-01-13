@@ -18,28 +18,34 @@
 
 #ifndef PERSISTENT_MEM_LOG
 #define PERSISTENT_MEM_LOG(fmt, ...) ((void)0)
-// #define PERSISTENT_MEM_LOG(fmt, ...) printf("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__) #define PERSISTENT_MEM_LOG(fmt, ...)
-// __android_log_print(ANDROID_LOG_FATAL, "PersistentMem", "[%s:%d] " fmt,0 __FILE__, __LINE__, ##__VA_ARGS__)
 #endif
 
 #define MAX_SIZE_CLASS 20
+
+// Architecture-dependent offset type for lock-free atomics
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+  // 64-bit architecture
+  typedef uint64_t persistent_offset_t;
+#elif UINTPTR_MAX == 0xFFFFFFFFu
+  // 32-bit architecture
+  typedef uint32_t persistent_offset_t;
+#else
+  #error "Unsupported architecture: pointer size must be 32 or 64 bits"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// special name for offsets within the persistent space
-typedef uint64_t persistent_offset_t;
-
-#define ptr_to_persistent_offset(space, ptr)                                   \
-  ((uint64_t)ptr > (uint64_t)space ? (uint64_t)ptr - (uint64_t)space : 0)
-#define persistent_offset_to_ptr(space, offset)                                \
-  (offset != 0 ? (void *)((uint64_t)space + offset) : NULL)
+#define ptr_to_persistent_offset(space, ptr)                                          \
+  ((uintptr_t)(ptr) > (uintptr_t)(space) ? (uintptr_t)(ptr) - (uintptr_t)(space) : 0)
+#define persistent_offset_to_ptr(space, offset)                                       \
+  ((offset) != 0 ? (void *)((uintptr_t)(space) + (offset)) : NULL)
 
 // Block header - stored before each allocated: block = { block_header, &public_ptr }
 typedef struct block_header {
-  // size in lower 60 bits, flags in upper 4 bits
-  ATOMIC(uint64_t) size_and_flags;
+  // size in lower bits, flags in upper 4 bits
+  ATOMIC(size_t) size_and_flags;
   // next in free list (only used when free)
   ATOMIC(persistent_offset_t) next_free;
 } block_header_t;
@@ -56,14 +62,14 @@ typedef struct free_list {
  * [persistent_ptr] to rewrite the addresses to remain valid.
  */
 typedef struct allocator_space {
-  ATOMIC(uint32_t) magic;                    // magic number for validation
-  uint64_t origin;                           // the base pointer of the mmap region in its original memory space
-  uint64_t total_size;                       // total size of mmap region
-  uint64_t heap_start;                       // offset to start of heap area
-  ATOMIC(uint64_t) heap_end;                 // current end of heap (offset)
-  free_list_t free_lists[MAX_SIZE_CLASS];    // free list for each of the block size classes
-  ATOMIC(uint64_t) large_free_head;          // offset to large block free list
-  ATOMIC(persistent_offset_t) roots_head;    // offset to the first tagged root
+  ATOMIC(uint32_t) magic;                        // magic number for validation
+  size_t origin;                                 // the base pointer of the mmap region in its original memory space
+  size_t total_size;                             // total size of mmap region
+  size_t heap_start;                             // offset to start of heap area
+  ATOMIC(size_t) heap_end;                       // current end of heap (offset)
+  free_list_t free_lists[MAX_SIZE_CLASS];        // free list for each of the block size classes
+  ATOMIC(persistent_offset_t) large_free_head;   // offset to large block free list
+  ATOMIC(persistent_offset_t) roots_head;        // offset to the first tagged root
 } allocator_space_t;
 
 /**
@@ -79,15 +85,44 @@ typedef struct allocator_root {
 
 /**
  * Create a fixed-size persistent sub-heap within filename of size bytes. The
- * memory region cannot be shrunk or grown.
+ * memory region cannot be shrunk or grown. If the given filename has already
+ * been mapped or already contains a persistent allocator, the allocator
+ * state is *not* altered by this function.
  *
  * @param filename
  * @param requested_size
- * @return
+ * @return the persistent space or NULL
  */
 allocator_space_t *create_persistent_allocator(const char *filename,
                                                size_t requested_size);
 
+/**
+ * Attempt to map the given file as an allocator space. The size of the
+ * allocator is assumed to be the size of the file, and the file is mapped
+ * read/write with the MAP_PRIVATE mmap flag, making any changes private.
+ * This is best suited for cases where the allocator space contains raw
+ * pointers in another space, and you wish to rewrite them inline in order
+ * to recover the data within the space.
+ *
+ * Typically this is used for things like crash-recovery where the
+ * allocator_space was used to store state that now needs to be recovered.
+ * Because changes to the returned allocator_space are not propagated to any
+ * other processes, or back to the file this can be safely used on the same
+ * file multiple times.
+ */
+allocator_space_t *load_private_persistent_allocator(const char *filename);
+
+/**
+ * Allocates [size] bytes within [space] and returns a pointer to the allocated
+ * memory. The memory is not initialized. Unlike `malloc` if [size] is 0
+ * `persistent_malloc` returns NULL. If there is not enough space remaining
+ * in the space (or the space pointer is not valid) this function will fail
+ * and return NULL.
+ *
+ * @param space the space to allocate memory within
+ * @param size the number of bytes to allocate
+ * @return a pointer to the allocated memory, or NULL if allocation failed
+ */
 void *persistent_malloc(allocator_space_t *space, size_t size);
 
 /**
@@ -139,6 +174,15 @@ void *persistent_ptr(allocator_space_t *space, void *ptr);
 
 void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size);
 
+/**
+ * Unmap the given allocator space. If the `space` is NULL or does not point
+ * to an initialised allocator space this function has no effect.
+ *
+ * *WARNING*: Once this function returns any attempt to address `space` or any
+ * memory that was allocated within it (via [persistent_malloc]) will likely
+ * cause a segmentation fault (since all addresses within the space no longer
+ * exist so far as the process is concerned).
+ */
 void destroy_persistent_allocator(allocator_space_t *space);
 
 #ifdef __cplusplus
