@@ -15,7 +15,6 @@ A pure C (though C++ compatible) allocator that works with `mmap` allowing you t
 
 - Fixed size - the allocator currently works strictly within a single fixed region and will not attempt to acquire more memory
 - No `calloc` equivilent - if you want clean memory, use `memset` after `persistent_malloc`
-- Non-optimal realloc - `persistent_realloc` will not attempt to merge contiguous blocks of memory
 - `PersistentPtr` cannot be made atomic (yet) - this will be added when I have time
 - No C++ STL `Allocator`
 
