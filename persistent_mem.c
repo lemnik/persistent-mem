@@ -254,9 +254,11 @@ static block_header_t *free_list_pop(allocator_space_t *space,
     // Read next_free while block is still in the list
     next_offset = atomic_load(&head->next_free);
 
-    block_header_t *next = persistent_offset_to_ptr(space, next_offset);
-    if (!next || !is_persistent_ptr(space, next)) {
-      return NULL;
+    if (next_offset != 0) {
+      block_header_t *next = persistent_offset_to_ptr(space, next_offset);
+      if (!next || !is_persistent_ptr(space, next)) {
+        return NULL;  // Invalid next pointer
+      }
     }
 
     // Try to remove from the list
@@ -288,9 +290,10 @@ static inline void restore_drained_list(allocator_space_t *space,
         block_header_t *drained_lst) {
   while (drained_lst) {
     block_header_t *restore = drained_lst;
-    // Use raw pointer stored in next_free (cast from block_header_t*)
-    drained_lst = (block_header_t *)restore->next_free;
-    add_to_free_list(space, restore);
+    // Read next pointer BEFORE add_to_free_list overwrites it
+    persistent_offset_t next_as_ptr = atomic_load(&restore->next_free);
+    block_header_t *next_drained = (block_header_t *)next_as_ptr;
+    drained_lst = next_drained;
   }
 }
 
@@ -350,7 +353,7 @@ static bool try_merge_block_with_next(
         break;
       } else {
         // This is not our block, so we add it to our private list for later
-        b->next_free = (persistent_offset_t)drained_lst;
+        atomic_store(&b->next_free, (persistent_offset_t)drained_lst);
         drained_lst = b;
       }
     } else {
@@ -480,6 +483,25 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
   if (aligned_new_size <= old_size) {
     // Shrinking or same size
     return ptr;
+  }
+
+  // Can we merge this block with the next block to achieve the desired size
+  block_header_t *next = get_next_contiguous_block(space, block);
+  if (next) {
+    int size_and_flags = atomic_load(&next->size_and_flags);
+    size_t next_size = get_size(size_and_flags);
+
+    // the block is free, so we should check whether the combined size if enough
+    if (get_flags(size_and_flags) & BLOCK_FREE) {
+      size_t combined_size = old_size + sizeof(block_header_t) + next_size;
+
+      if (aligned_new_size <= combined_size &&
+        try_merge_block_with_next(space, block)) {
+
+        // the block was successfully merged with next
+        return ptr;
+      }
+    }
   }
 
   // Need to allocate new block
