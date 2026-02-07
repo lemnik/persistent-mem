@@ -80,6 +80,22 @@ static inline size_t class_to_size(int memclass) {
   return (memclass >= 0 && memclass < MAX_SIZE_CLASS) ? sizes[memclass] : 0;
 }
 
+static block_header_t *get_next_contiguous_block(
+        allocator_space_t *space, block_header_t *block) {
+
+  const size_t heap_end = atomic_load(&space->heap_end);
+  const uintptr_t heap_extent = (uintptr_t) space + heap_end;
+  const uintptr_t address_of_next = (uintptr_t) block +
+          sizeof(block_header_t) +
+          get_size(block->size_and_flags);
+
+  if (address_of_next >= heap_extent) {
+    return NULL;
+  }
+
+  return (block_header_t *)address_of_next;
+}
+
 static inline bool is_persistent_ptr(allocator_space_t *space, void *ptr) {
   return (char *)ptr > (char *)space + space->heap_start && (char *)ptr < (char *)space + space->total_size;
 }
@@ -190,6 +206,19 @@ static block_header_t *split_block(block_header_t *block,
   return NULL;
 }
 
+static void free_list_push(allocator_space_t *space, free_list_t *lst,
+                           block_header_t *block) {
+
+  persistent_offset_t block_offset = ptr_to_persistent_offset(space, block);
+  persistent_offset_t old_head_offset;
+
+  old_head_offset = atomic_load(&lst->free_head);
+  do {
+    atomic_store(&block->next_free, old_head_offset);
+  } while (!atomic_compare_exchange_weak(&lst->free_head, &old_head_offset,
+          block_offset));
+}
+
 // Add block to appropriate free list
 static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
   // Mark as free
@@ -203,25 +232,12 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
   const int memclass = size_to_class(size);
 
   free_list_t *lst = &space->free_lists[memclass];
-
-  persistent_offset_t block_offset = ptr_to_persistent_offset(space, block);
-  persistent_offset_t old_head_offset;
-
-  old_head_offset = atomic_load(&lst->free_head);
-  do {
-    atomic_store(&block->next_free, old_head_offset);
-  } while (!atomic_compare_exchange_weak(&lst->free_head, &old_head_offset,
-                                         block_offset));
+  free_list_push(space, lst, block);
 }
 
-// Remove block from free list
-static block_header_t *remove_from_free_list(allocator_space_t *space,
-                                             int memclass) {
-  if (memclass < 0 || memclass >= MAX_SIZE_CLASS) {
-    return NULL;
-  }
+static block_header_t *free_list_pop(allocator_space_t *space,
+                                     free_list_t *lst) {
 
-  free_list_t *lst = &space->free_lists[memclass];
   persistent_offset_t head_offset, next_offset;
 
   do {
@@ -245,7 +261,7 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
 
     // Try to remove from the list
     if (atomic_compare_exchange_weak(&lst->free_head, &head_offset,
-                                     next_offset)) {
+            next_offset)) {
       // Successfully removed - NOW mark as allocated (and not before!)
       if (block_try_clear_flag(head, BLOCK_FREE)) {
         atomic_store(&head->next_free, 0);
@@ -254,6 +270,117 @@ static block_header_t *remove_from_free_list(allocator_space_t *space,
     }
     // CAS failed, head_offset updated, retry!
   } while (1);
+}
+
+// Remove block from free list
+static block_header_t *remove_from_free_list(allocator_space_t *space,
+                                             int memclass) {
+  if (memclass < 0 || memclass >= MAX_SIZE_CLASS) {
+    return NULL;
+  }
+
+  free_list_t *lst = &space->free_lists[memclass];
+  return free_list_pop(space, lst);
+}
+
+// Restore a thread-local drained list back to the free list
+static inline void restore_drained_list(allocator_space_t *space,
+        block_header_t *drained_lst) {
+  while (drained_lst) {
+    block_header_t *restore = drained_lst;
+    // Use raw pointer stored in next_free (cast from block_header_t*)
+    drained_lst = (block_header_t *)restore->next_free;
+    add_to_free_list(space, restore);
+  }
+}
+
+// Attempt to merge this block with its next contiguous block if it is free
+static bool try_merge_block_with_next(
+        allocator_space_t *space,
+        block_header_t *block) {
+  block_header_t *next = get_next_contiguous_block(space, block);
+
+  if (!next) {
+    // There is no "next" block within the defined space, so we can't merge
+    return false;
+  }
+
+  size_t next_size_and_flags = atomic_load(&next->size_and_flags);
+
+  // Check if next block is free before attempting to claim it
+  if (!(get_flags(next_size_and_flags) & BLOCK_FREE)) {
+    // Next block is not free, cannot merge
+    return false;
+  }
+
+  // Try to claim the next block by clearing its FREE flag
+  // This prevents other threads from allocating it while we work
+  if (!block_try_clear_flag(next, BLOCK_FREE)) {
+    // Another thread already claimed or allocated this block
+    return false;
+  }
+
+  // At this point we "own" the next block - it's marked as allocated
+  // but hasn't been given to any user yet. We need to remove it from
+  // its free list to complete the merge.
+
+  // Get the size class for the next block
+  size_t next_size = get_size(atomic_load(&next->size_and_flags));
+  const int next_block_class = size_to_class(next_size);
+
+  if (next_block_class < 0 || next_block_class >= MAX_SIZE_CLASS) {
+    // Invalid size class - this shouldn't happen but handle it defensively
+    // Re-mark the block as free since we're aborting
+    block_try_set_flag(next, BLOCK_FREE);
+    return false;
+  }
+
+  free_list_t *lst = &space->free_lists[next_block_class];
+
+  // We need to remove 'next' from its free list using the drain-and-restore pattern
+  // This is lock-free and handles all race conditions correctly
+  block_header_t *drained_lst = NULL;
+
+  for (;;) {
+    block_header_t *b = free_list_pop(space, lst);
+
+    if (b) {
+      if (b == next) {
+        // Found it! The block is now fully removed from the free list
+        break;
+      } else {
+        // This is not our block, so we add it to our private list for later
+        b->next_free = (persistent_offset_t)drained_lst;
+        drained_lst = b;
+      }
+    } else {
+      // We've drained the entire free list without finding our block
+      // This means another thread already removed it from the list (race condition)
+      // BUT we still own the block (we cleared its FREE flag), so we can proceed
+      // with the merge.
+      break;
+    }
+  }
+
+  // At this point, 'next' is fully owned by us (either found and removed, or already
+  // removed by another thread but we still have ownership via the cleared FREE flag)
+  // If we found it in the list, restore all drained blocks
+  if (drained_lst) {
+    restore_drained_list(space, drained_lst);
+  }
+
+  // Now we can safely merge the blocks
+  // Calculate the new size: current block size + header + next block size
+  size_t current_size_and_flags = atomic_load(&block->size_and_flags);
+  size_t current_size = get_size(current_size_and_flags);
+  size_t merged_size = current_size + sizeof(block_header_t) + next_size;
+
+  // Update the current block's size to include the merged block
+  // Preserve the current flags (the block should not be FREE if we're merging into it)
+  size_t current_flags = get_flags(current_size_and_flags);
+  atomic_store(&block->size_and_flags, make_size_and_flags(merged_size, current_flags));
+
+  return true;
 }
 
 void *persistent_malloc(allocator_space_t *space, size_t size) {
@@ -320,6 +447,10 @@ void persistent_free(allocator_space_t *space, void *ptr) {
   if (get_flags(size_and_flags) & BLOCK_FREE) {
     return; // Double free protection
   }
+
+  // we attempt to coalesce this block with its contiguous "next" to reduce
+  // fragmentation, we spin this until it no longer succeeds
+  while (try_merge_block_with_next(space, block));
 
   add_to_free_list(space, block);
 }

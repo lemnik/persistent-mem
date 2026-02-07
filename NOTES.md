@@ -1,6 +1,6 @@
 # Implementation Details & Notes
 
-The allocator is a relatively simple block based allocator with "large block" support. Each allocated block typically (except for the "large" blocks) belongs to a "memory class" which determines the amount of memory it consumes. Within each block header we keep track of its internal size (the size given in `malloc` or `realloc`) along with a space for the next free block (when it is on the free list).
+The allocator is a relatively simple block based allocator. Each allocated block typically belongs to a "memory class" which determines the amount of memory it consumes. Within each block header we keep track of its size (which determines its memclass) along with a space for the next free block (when it is on the free list).
 
 ## Core Principals
 
@@ -34,3 +34,9 @@ Blocks are marked as being "free" by setting their "free" flag *strictly before*
 1. `threadB`: WAT
 
 We don't currently guard against this behaviour as it is currently considered extremely unlikely and probably the result of buggy code.
+
+### Block Coalescing / Merging
+
+When a block is freed and the "next" contiguous block of memory is already free we will attempt to merge them together to form a single, larger block. This is done with a brute-force drain-and-restore of the appropriate free-list. This approach is simple and works using the other alloc/free primitives to avoid ABA and race conditions. While there are more optimal solutions to unlinking the block, actual coalescing is relatively rare as we first "steal" the neighbouring block by marking it as non-free (clearing its `FREE` flag) which ensures it cannot be allocated. If we cannot steal the block, then no coalescing can take place and the expensive drain-and-restore is completely skipped.
+
+The algorithm does raise a possible memory starvation for the coalescing memclass while the list is being drained, but this is rare and will mostly result in other threads simply splitting a larger memclass or resorting to heap allocation.
