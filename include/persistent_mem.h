@@ -68,7 +68,6 @@ typedef struct allocator_space {
   size_t heap_start;                             // offset to start of heap area
   ATOMIC(size_t) heap_end;                       // current end of heap (offset)
   free_list_t free_lists[MAX_SIZE_CLASS];        // free list for each of the block size classes
-  ATOMIC(persistent_offset_t) large_free_head;   // offset to large block free list
   ATOMIC(persistent_offset_t) roots_head;        // offset to the first tagged root
 } allocator_space_t;
 

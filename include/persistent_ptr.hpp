@@ -58,6 +58,8 @@ public:
     }
   }
 
+  ~PersistentPtr() noexcept {}
+
   // Assignment operator
   PersistentPtr &operator=(const PersistentPtr &other) noexcept {
     if (this != &other) {

@@ -16,24 +16,20 @@
 
 #define MAGIC_NUMBER   0x0000ADFBCADE
 #define MIN_BLOCK_SIZE 32
+#define MAX_BLOCK_SIZE 16777216
 #define ALIGNMENT      16
 
-// Flags for block header (upper 2 bits)
+// Free flag in block header
 #define BLOCK_FREE  0x1
-#define BLOCK_LARGE 0x2
 
 // Large block limit adjusted for architecture
 #if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
 
-// 64-bit: 16MB limit, 62 bits for size
-#define LARGE_BLOCK_LIMIT 0x1000000
 #define SIZE_MASK         0x3FFFFFFFFFFFFFFFuLL
 #define FLAG_SHIFT        62
 
 #else
 
-// 32-bit: 1GB limit, 30 bits for size
-#define LARGE_BLOCK_LIMIT 0x40000000
 #define SIZE_MASK         0x3FFFFFFFu
 #define FLAG_SHIFT        30
 
@@ -59,7 +55,7 @@ static inline size_t align_up(size_t size, size_t alignment) {
 static inline int size_to_class(size_t size) {
   if (size <= MIN_BLOCK_SIZE)
     return 0;
-  if (size > LARGE_BLOCK_LIMIT)
+  if (size > MAX_BLOCK_SIZE)
     return -1;
 
 #if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
@@ -78,7 +74,7 @@ static inline size_t class_to_size(int memclass) {
   static const size_t sizes[] = {
       32,     64,      128,     256,     512,     1024,    2048,
       4096,   8192,    16384,   32768,   65536,   131072,  262144,
-      524288, 1048576, 2097152, 4194304, 8388608, 16777216
+      524288, 1048576, 2097152, 4194304, 8388608, MAX_BLOCK_SIZE
   };
 
   return (memclass >= 0 && memclass < MAX_SIZE_CLASS) ? sizes[memclass] : 0;
@@ -109,7 +105,6 @@ static int init_allocator_state(allocator_space_t *space, size_t total_size) {
   space->total_size = total_size;
   space->heap_start = sizeof(allocator_space_t);
   atomic_store(&space->heap_end, sizeof(allocator_space_t));
-  atomic_store(&space->large_free_head, 0);
   atomic_store(&space->roots_head, 0);
 
   for (int i = 0; i < MAX_SIZE_CLASS; i++) {
@@ -207,28 +202,16 @@ static void add_to_free_list(allocator_space_t *space, block_header_t *block) {
   size_t size = get_size(size_and_flags);
   const int memclass = size_to_class(size);
 
-  if (memclass >= 0) {
-    // Small/medium block - add to size memclass
-    free_list_t *lst = &space->free_lists[memclass];
-    persistent_offset_t block_offset = ptr_to_persistent_offset(space, block);
-    persistent_offset_t old_head_offset;
+  free_list_t *lst = &space->free_lists[memclass];
 
-    old_head_offset = atomic_load(&lst->free_head);
-    do {
-      atomic_store(&block->next_free, old_head_offset);
-    } while (!atomic_compare_exchange_weak(&lst->free_head, &old_head_offset,
-                                           block_offset));
-  } else {
-    // Large block - add to large free list (for large blocks, that are large)
-    persistent_offset_t block_offset = (persistent_offset_t)((char *)block - (char *)space);
-    persistent_offset_t old_head_offset;
+  persistent_offset_t block_offset = ptr_to_persistent_offset(space, block);
+  persistent_offset_t old_head_offset;
 
-    old_head_offset = atomic_load(&space->large_free_head);
-    do {
-      atomic_store(&block->next_free, old_head_offset);
-    } while (!atomic_compare_exchange_weak(&space->large_free_head,
-                                           &old_head_offset, block_offset));
-  }
+  old_head_offset = atomic_load(&lst->free_head);
+  do {
+    atomic_store(&block->next_free, old_head_offset);
+  } while (!atomic_compare_exchange_weak(&lst->free_head, &old_head_offset,
+                                         block_offset));
 }
 
 // Remove block from free list
@@ -310,21 +293,6 @@ void *persistent_malloc(allocator_space_t *space, size_t size) {
         // Add the leftover piece to the free list.
         add_to_free_list(space, remainder);
       }
-      return (char *)block + sizeof(block_header_t);
-    }
-  } else {
-    // Large allocation - allocate directly from heap
-    block = allocate_from_heap(space, aligned_size);
-    if (block) {
-      // Mark as a large block
-      size_t old_saf, new_saf;
-      old_saf = atomic_load(&block->size_and_flags);
-      do {
-        new_saf = make_size_and_flags(get_size(old_saf),
-                                      get_flags(old_saf) | BLOCK_LARGE);
-      } while (!atomic_compare_exchange_weak(&block->size_and_flags, &old_saf,
-                                             new_saf));
-
       return (char *)block + sizeof(block_header_t);
     }
   }
