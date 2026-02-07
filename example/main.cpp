@@ -1,10 +1,8 @@
 #include "persistent_ptr.hpp"
-#include "ring_buffer.hpp"
 #include <cstdio>
 #include <cstring>
 
 #define VEC_ROOT_CLASS 0x56454300  // "VEC"
-#define RING_ROOT_CLASS 0x52494e47 // "RING"
 
 using namespace persistent_mem;
 
