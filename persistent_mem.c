@@ -20,18 +20,18 @@
 #define ALIGNMENT      16
 
 // Free flag in block header
-#define BLOCK_FREE  0x1
+#define BLOCK_FREE    0x1
 
 // Large block limit adjusted for architecture
 #if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
 
-#define SIZE_MASK         0x3FFFFFFFFFFFFFFFuLL
-#define FLAG_SHIFT        62
+#define SIZE_MASK         0x7FFFFFFFFFFFFFFFuLL
+#define FLAG_SHIFT        63
 
 #else
 
-#define SIZE_MASK         0x3FFFFFFFu
-#define FLAG_SHIFT        30
+#define SIZE_MASK         0x7FFFFFFFu
+#define FLAG_SHIFT        31
 
 #endif
 
