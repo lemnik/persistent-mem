@@ -294,6 +294,7 @@ static inline void restore_drained_list(allocator_space_t *space,
     persistent_offset_t next_as_ptr = atomic_load(&restore->next_free);
     block_header_t *next_drained = (block_header_t *)next_as_ptr;
     drained_lst = next_drained;
+    add_to_free_list(space, restore);
   }
 }
 
@@ -481,7 +482,11 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
   size_t aligned_new_size = align_up(new_size, ALIGNMENT);
 
   if (aligned_new_size <= old_size) {
-    // Shrinking or same size
+    // shrinking or the same size, split_block handles the distinction for us already
+    block_header_t *remainder = split_block(block, aligned_new_size);
+    if (remainder) {
+      add_to_free_list(space, remainder);
+    }
     return ptr;
   }
 
@@ -526,7 +531,7 @@ allocator_space_t *load_private_persistent_allocator(const char *filename) {
 
   const size_t size = st.st_size;
 
-  int fd = open(filename, O_RDWR, 0644);
+  int fd = open(filename, O_RDWR, 0);
   if (fd < 0) {
     return NULL;
   }
