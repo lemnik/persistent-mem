@@ -6,6 +6,7 @@ A pure C (though C++ compatible) allocator that works with `mmap` allowing you t
 
 - ***thread safe && lock free*** - no blocking, no spin locks, just pure atomics
 - `malloc`, `free` and `realloc` implementations
+  - `persistent_realloc` isn't the footgun that `realloc` is (it takes `void **ptr` and rewrites the address on success, and returns `true`/`false`)
 - ***archeology / forensic capabilities*** - rewrite pointers from previous memory spaces using `persistent_ptr`
 - ***identifiable / tagged allocations*** - `persistent_malloc_root` allows "root" allocations to be tagged for later retrieval (between process runs)
 - ***some C++ functionality***

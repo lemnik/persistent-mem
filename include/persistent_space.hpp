@@ -147,6 +147,15 @@ private:
     }
 };
 
+/**
+ * Delegates to persistent_free(space, ptr), suitable for use with templates for types like RingBuffer
+ */
+struct free_persistent {
+    void operator()(allocator_space_t *space, void* ptr) const {
+        persistent_free(space, ptr);
+    }
+};
+
 }
 
 #endif

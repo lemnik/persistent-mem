@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifndef PERSISTENT_MEM_LOG
 #define PERSISTENT_MEM_LOG(fmt, ...) ((void)0)
@@ -171,7 +172,33 @@ void persistent_free(allocator_space_t *space, void *ptr);
  */
 void *persistent_ptr(allocator_space_t *space, void *ptr);
 
-void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size);
+#define persistent_realloc(space, ptr, new_size) \
+    persistent_realloc_impl((space), (void **)&(ptr), (new_size))
+
+/**
+ * Attempt to reallocate the memory addressed by ptr so that it is new_size bytes.
+ * Avoid using this method directly, and use the persistent_realloc macro instead.
+ *
+ * Unlike stdlib realloc this method takes a pointer-to-pointer of the memory
+ * to allocate. Typical use follows a pattern like:
+ *
+ * ```c
+ * if (!persistent_realloc(space, my_pointer, required_size)) {
+ *   persistent_free(space, my_pointer);
+ * }
+ * ```
+ *
+ * If the memory can be resized "in-place" the ptr will remain unchanged by this
+ * method, otherwise it will be rewritten to the new location where the memory is
+ * available.
+ *
+ * Returns `true` on a successful reallocation, and `false` if reallocation failed.
+ *
+ * @param space
+ * @param ptr the pointer to the pointer to reallocate
+ * @param new_size the requested size of the pointer
+ */
+bool persistent_realloc_impl(allocator_space_t *space, void **ptr, size_t new_size);
 
 /**
  * Unmap the given allocator space. If the `space` is NULL or does not point

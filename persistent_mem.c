@@ -459,26 +459,26 @@ void persistent_free(allocator_space_t *space, void *ptr) {
   add_to_free_list(space, block);
 }
 
-void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
-  if (!space)
-    return NULL;
+bool persistent_realloc_impl(allocator_space_t *space, void **ptr, size_t new_size) {
+  if (!space || !ptr) {
+    return false;
+  }
 
   if (atomic_load(&space->magic) != MAGIC_NUMBER) {
-    return NULL;
+    return false;
   }
 
-  if (!ptr) {
-    return persistent_malloc(space, new_size);
+  if (!*ptr) {
+    // we can't realloc NULL
+    return false;
   }
-
   if (new_size == 0) {
-    persistent_free(space, ptr);
-    return NULL;
+    // caller should really be using free
+    return false;
   }
 
-  block_header_t *block = (block_header_t *)((char *)ptr - sizeof(block_header_t));
-  size_t size_and_flags = atomic_load(&block->size_and_flags);
-  size_t old_size = get_size(size_and_flags);
+  block_header_t *block = (block_header_t *)((char *)*ptr - sizeof(block_header_t));
+  size_t old_size = get_size(atomic_load(&block->size_and_flags));
   size_t aligned_new_size = align_up(new_size, ALIGNMENT);
 
   if (aligned_new_size <= old_size) {
@@ -487,24 +487,23 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
     if (remainder) {
       add_to_free_list(space, remainder);
     }
-    return ptr;
+    return true;
   }
 
   // Can we merge this block with the next block to achieve the desired size
   block_header_t *next = get_next_contiguous_block(space, block);
   if (next) {
-    int size_and_flags = atomic_load(&next->size_and_flags);
-    size_t next_size = get_size(size_and_flags);
+    size_t next_saf = atomic_load(&next->size_and_flags);
+    if ((get_flags(next_saf) & BLOCK_FREE) &&
+        old_size + sizeof(block_header_t) + get_size(next_saf) >= aligned_new_size) {
 
-    // the block is free, so we should check whether the combined size if enough
-    if (get_flags(size_and_flags) & BLOCK_FREE) {
-      size_t combined_size = old_size + sizeof(block_header_t) + next_size;
-
-      if (aligned_new_size <= combined_size &&
-        try_merge_block_with_next(space, block)) {
-
-        // the block was successfully merged with next
-        return ptr;
+      if (try_merge_block_with_next(space, block)) {
+        // Split off any excess from the merged block
+        block_header_t *remainder = split_block(block, aligned_new_size);
+        if (remainder) {
+          add_to_free_list(space, remainder);
+        }
+        return true;
       }
     }
   }
@@ -512,14 +511,14 @@ void *persistent_realloc(allocator_space_t *space, void *ptr, size_t new_size) {
   // Need to allocate new block
   void *new_ptr = persistent_malloc(space, new_size);
   if (!new_ptr) {
-    return NULL;
+    // no more memory for you!
+    return false;
   }
 
-  // Copy old data
-  memcpy(new_ptr, ptr, old_size);
-  persistent_free(space, ptr);
-
-  return new_ptr;
+  memcpy(new_ptr, *ptr, old_size);
+  persistent_free(space, *ptr);
+  *ptr = new_ptr;
+  return true;
 }
 
 

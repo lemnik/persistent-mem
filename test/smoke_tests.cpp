@@ -135,14 +135,13 @@ TEST_CASE("Reallocation") {
 
         memset(ptr, 0xCD, 64);
 
-        void* new_ptr = persistent_realloc(space, ptr, 128);
-        REQUIRE(new_ptr != nullptr);
+        REQUIRE(persistent_realloc(space, ptr, 128));
 
         // First 64 bytes should be preserved
-        CHECK(((unsigned char*)new_ptr)[0] == 0xCD);
-        CHECK(((unsigned char*)new_ptr)[63] == 0xCD);
+        CHECK(((unsigned char*)ptr)[0] == 0xCD);
+        CHECK(((unsigned char*)ptr)[63] == 0xCD);
 
-        persistent_free(space, new_ptr);
+        persistent_free(space, ptr);
     }
 
     SUBCASE("Shrink allocation") {
@@ -151,19 +150,18 @@ TEST_CASE("Reallocation") {
 
         memset(ptr, 0xEF, 256);
 
-        void* new_ptr = persistent_realloc(space, ptr, 64);
-        REQUIRE(new_ptr != nullptr);
+        REQUIRE(persistent_realloc(space, ptr, 64));
 
         // Data should be preserved
-        CHECK(((unsigned char*)new_ptr)[0] == 0xEF);
-        CHECK(((unsigned char*)new_ptr)[63] == 0xEF);
+        CHECK(((unsigned char*)ptr)[0] == 0xEF);
+        CHECK(((unsigned char*)ptr)[63] == 0xEF);
 
-        persistent_free(space, new_ptr);
+        persistent_free(space, ptr);
     }
 
     SUBCASE("Realloc NULL pointer") {
-        void* ptr = persistent_realloc(space, nullptr, 128);
-        REQUIRE(ptr != nullptr);
+        char *ptr = nullptr;
+        REQUIRE_FALSE(persistent_realloc(space, ptr, 128));
         persistent_free(space, ptr);
     }
 
@@ -171,8 +169,8 @@ TEST_CASE("Reallocation") {
         void* ptr = persistent_malloc(space, 64);
         REQUIRE(ptr != nullptr);
 
-        void* new_ptr = persistent_realloc(space, ptr, 0);
-        // Implementation-defined: may act as free
+        // Should return false
+        REQUIRE_FALSE(persistent_realloc(space, ptr, 0));
     }
 
     destroy_persistent_allocator(space);
